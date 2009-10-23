@@ -315,6 +315,7 @@ void VertexServer_setupPQuery_(VertexServer *self, PQuery *q)
 	PQuery_setSelectCountMax_(q, Datum_asInt(VertexServer_queryValue_(self, "count")));
 	PQuery_setWhereKey_(q, VertexServer_queryValue_(self, "whereKey"));
 	PQuery_setWhereValue_(q, VertexServer_queryValue_(self, "whereValue"));
+	PQuery_setAttribute_(q, VertexServer_queryValue_(self, "attribute"));
 	//PQuery_setMode_(q, VertexServer_queryValue_(self, "mode"));
 }
 
@@ -387,7 +388,6 @@ int VertexServer_api_read(VertexServer *self)
 	}
 	
 	Datum_appendYajl_(self->result, self->yajl);
-
 	return 0;
 }
 
@@ -474,7 +474,7 @@ int VertexServer_api_transaction(VertexServer *self)
 	{
 		Datum_copy_(uri, self->post);
 		r = Datum_sepOnChars_with_(uri, "\n", self->post);
-		if (Datum_size(uri) == 0) break;
+		if (Datum_size(uri) == 0) { error = 1; break; }
 		VertexServer_parseUri_(self, Datum_data(uri));
 		error = VertexServer_process(self);
 		Pool_freeRefs(self->pool);
@@ -556,10 +556,16 @@ int VertexServer_api_queuePopTo(VertexServer *self)
 			}
 			
 			//printf("queueing key %s\n", Datum_data(k));
-			Datum_append_(self->result, k);
+			yajl_gen_datum(self->yajl, k);
 			PNode_removeAtCursor(fromNode);
 		}
+		else
+		{
+			yajl_gen_null(self->yajl);
+		}
 	}
+	
+	Datum_appendYajl_(self->result, self->yajl);
 	
 	return 0;
 }
@@ -615,7 +621,9 @@ int VertexServer_api_queueExpireTo(VertexServer *self)
 		Datum_free(qExpireKey);
 	}
 	
-	Datum_appendLong_(self->result, (long)itemsExpired);
+	yajl_gen_integer(self->yajl, (long)itemsExpired);
+	Datum_appendYajl_(self->result, self->yajl);
+	
 	return 0;
 }
 
@@ -743,6 +751,8 @@ int VertexServer_api_backup(VertexServer *self)
 
 int VertexServer_api_collectGarbage(VertexServer *self)
 {
+	Log_Printf("collectGarbage disabled until bug fixed\n");
+/*
 	time_t t1 = time(NULL);
 	long collectedCount; 
 	
@@ -756,6 +766,7 @@ int VertexServer_api_collectGarbage(VertexServer *self)
 	Datum_appendCString_(self->result, " seconds");
 	Log_Printf__("collected %i slots in %f seconds\n", 
 		(int)collectedCount, (float)dt);
+*/
 	return 0;
 }
 
@@ -783,7 +794,7 @@ int VertexServer_api_view(VertexServer *self)
 	Datum *after = VertexServer_queryValue_(self, "after");
 	PNode *node = PDB_allocNode(self->pdb);
 	Datum *d = self->result;
-	int maxCount = 1000;
+	int maxCount = 200;
 	
 	if (PNode_moveToPathIfExists_(node, self->uriPath) != 0) 
 	{
@@ -800,7 +811,7 @@ int VertexServer_api_view(VertexServer *self)
 		Datum_appendCString_(d, ".path { font-size: 1em; font-weight: normal; font-family: sans; }");
 		Datum_appendCString_(d, ".note { color:#aaaaaa; font-size: 1em; font-weight: normal; font-family: sans;  }");
 		Datum_appendCString_(d, ".key { color:#000000;  }");
-		Datum_appendCString_(d, ".value { color:#888888;  }");
+		Datum_appendCString_(d, ".value { color:#888888; white-space:pre; }");
 		Datum_appendCString_(d, "a { color: #0000aa; text-decoration: none;  }");
 
 		Datum_appendCString_(d, "</style>\n");
@@ -874,9 +885,9 @@ int VertexServer_api_view(VertexServer *self)
 				Datum_appendCString_(d, "</td>");
 				
 				Datum_appendCString_(d, "<td>");
-				Datum_appendCString_(d, "&nbsp;&nbsp;<font class=value>");
+				Datum_appendCString_(d, "&nbsp;&nbsp;<span class=value>");
 				Datum_append_(d, PNode_value(node));
-				Datum_appendCString_(d, "</font>");
+				Datum_appendCString_(d, "</span>");
 				Datum_appendCString_(d, "<br>\n");
 				Datum_appendCString_(d, "</td>");
 			}
@@ -920,6 +931,7 @@ int VertexServer_api_view(VertexServer *self)
 	}
 	
 	Datum_appendCString_(d, "</body>\n");
+	//Log_Printf("done request\n");
 	return 0;
 }
 
@@ -1070,10 +1082,9 @@ void VertexServer_requestHandler(struct evhttp_request *req, void *arg)
 		VertexServer_parseUri_(self, uri);
 
 		Datum_clear(self->result);
+		evhttp_add_header(self->request->output_headers, "Content-Type", "application/json;charset=utf-8");
 		result = VertexServer_process(self);
 
-		evhttp_add_header(self->request->output_headers, "Content-Type", "application/json;charset=utf-8");
-		
 		if (result == 0)
 		{
 			if (Datum_size(self->result))
@@ -1261,6 +1272,11 @@ int VertexServer_run(VertexServer *self)
 		return -1; 
 	}
 	
+	/*
+	Log_Printf("warmup database...");
+	PDB_warmup(self->pdb);
+	Log_Printf("warmup done");
+	*/
 	event_init();
 	self->httpd = evhttp_start("0.0.0.0", 8080); 
 	 
