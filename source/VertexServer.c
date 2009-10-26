@@ -405,12 +405,6 @@ int VertexServer_api_write(VertexServer *self)
 		//return -1;
 	}
 	
-	if(Datum_size(value) == 0)
-	{
-		VertexServer_setError_(self, "empty values not accepted");
-		return -1;
-	}
-
 	if (PNode_moveToPathIfExists_(node, self->uriPath) != 0) 
 	{
 		VertexServer_setError_(self, "write path does not exist: ");
