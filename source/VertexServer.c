@@ -490,7 +490,12 @@ int VertexServer_api_transaction(VertexServer *self)
 	{
 		Datum_copy_(uri, self->post);
 		r = Datum_sepOnChars_with_(uri, "\n", self->post);
-		if (Datum_size(uri) == 0) { error = 1; break; }
+
+		if (Datum_size(uri) == 0) {
+			VertexServer_setError_(self, "empty line in transaction");
+			error = 1;
+			break;
+		}
 		VertexServer_parseUri_(self, Datum_data(uri));
 		error = VertexServer_process(self);
 		Pool_freeRefs(self->pool);
@@ -499,7 +504,6 @@ int VertexServer_api_transaction(VertexServer *self)
 	if (error)
 	{
 		#ifdef DISK_SYNC_ON_EACH_TRANSACTION
-			printf("ABORT\n\n");
 			PDB_abort(self->pdb);
 		#endif
 		result = -1;
@@ -529,9 +533,6 @@ int VertexServer_api_queuePopTo(VertexServer *self)
 	PNode *fromNode = PDB_allocNode(self->pdb);
 	PNode *toNode   = PDB_allocNode(self->pdb);
 	Datum *toPath   = VertexServer_queryValue_(self, "toPath");
-
-	PQuery *q = PNode_query(fromNode);
-	VertexServer_setupPQuery_(self, q);
 	
 	long ttl = Datum_asLong(VertexServer_queryValue_(self, "ttl"));
 	
@@ -541,10 +542,17 @@ int VertexServer_api_queuePopTo(VertexServer *self)
 		VertexServer_appendErrorDatum_(self, self->uriPath);
 		return -1;
 	}
-	
+
 	PNode_moveToPath_(toNode, toPath);
 	
+	//printf("to   pid: %s\n", Datum_data(PNode_pid(toNode)));
+	//printf("from pid: %s\n", Datum_data(PNode_pid(fromNode)));
+	
 	{
+		PQuery *q = PNode_query(fromNode);
+		VertexServer_setupPQuery_(self, q);
+		PNode_startQuery(fromNode);
+	
 		Datum *k = PQuery_key(q);
 		//Datum *k = PNode_key(fromNode);
 		Datum *v = PNode_value(fromNode);
@@ -767,8 +775,8 @@ int VertexServer_api_backup(VertexServer *self)
 
 int VertexServer_api_collectGarbage(VertexServer *self)
 {
-	Log_Printf("collectGarbage disabled until bug fixed\n");
-/*
+	//Log_Printf("collectGarbage disabled until bug fixed\n");
+
 	time_t t1 = time(NULL);
 	long collectedCount; 
 	
@@ -782,7 +790,7 @@ int VertexServer_api_collectGarbage(VertexServer *self)
 	Datum_appendCString_(self->result, " seconds");
 	Log_Printf__("collected %i slots in %f seconds\n", 
 		(int)collectedCount, (float)dt);
-*/
+
 	return 0;
 }
 
@@ -801,6 +809,12 @@ int VertexServer_api_showStats(VertexServer *self)
 int VertexServer_api_syncSizes(VertexServer *self)
 {
 	PDB_syncSizes(self->pdb);
+	return 0;
+}
+
+int VertexServer_api_sync(VertexServer *self)
+{
+	PDB_sync(self->pdb);
 	return 0;
 }
 
@@ -833,8 +847,6 @@ int VertexServer_api_view(VertexServer *self)
 		Datum_appendCString_(d, "</style>\n");
 		Datum_appendCString_(d, "</head>\n");
 		Datum_appendCString_(d, "<body>\n");
-	
-	evhttp_add_header(self->request->output_headers, "Content-Type", "text/html;charset=utf-8");
 	
 	/*
 	if(Datum_size(self->uriPath) == 0)
@@ -948,6 +960,7 @@ int VertexServer_api_view(VertexServer *self)
 	
 	Datum_appendCString_(d, "</body>\n");
 	//Log_Printf("done request\n");
+	self->isHtml = 1;
 	return 0;
 }
 
@@ -1026,6 +1039,7 @@ void VertexServer_setupActions(VertexServer *self)
 	VERTEX_SERVER_ADD_ACTION(showStats);
 	VERTEX_SERVER_ADD_ACTION(view);
 	//VERTEX_SERVER_ADD_ACTION(syncSizes);
+	VERTEX_SERVER_ADD_ACTION(sync);
 	
 	VERTEX_SERVER_ADD_OP(object);
 	VERTEX_SERVER_ADD_OP(sizes);
@@ -1099,7 +1113,7 @@ void VertexServer_requestHandler(struct evhttp_request *req, void *arg)
 		VertexServer_parseUri_(self, uri);
 
 		Datum_clear(self->result);
-		evhttp_add_header(self->request->output_headers, "Content-Type", "application/json;charset=utf-8");
+		self->isHtml = 0;
 		result = VertexServer_process(self);
 
 		if (result == 0)
@@ -1114,10 +1128,13 @@ void VertexServer_requestHandler(struct evhttp_request *req, void *arg)
 				evbuffer_add_printf(buf, "null");
 			}
 
+			evhttp_add_header(self->request->output_headers, "Content-Type", self->isHtml ? "text/html;charset=utf-8" : "application/json;charset=utf-8");
+			
 			evhttp_send_reply(self->request, HTTP_OK, HTTP_OK_MESSAGE, buf);
 		}
 		else
 		{
+			evhttp_add_header(self->request->output_headers, "Content-Type", "application/json;charset=utf-8");
 			if (Datum_size(self->error))
 			{
 				Datum_nullTerminate(self->error); 

@@ -13,7 +13,7 @@ Notes:
 #include <assert.h>
 
 //#define PDB_USE_TX 1
-#define PDB_USE_SYNC 1
+//#define PDB_USE_SYNC 1
 
 static int pathCompareBase(const char *p1, int len1, const char *p2, int len2, void *optionalOpaqueValue)
 {
@@ -70,6 +70,9 @@ PDB *PDB_new(void)
 	self->unusedPid = Datum_new();
 	self->useBackups = 1;
 	self->pool = Pool_new();
+	
+	srand(time(NULL)); // need to do because Datum_makePid64 uses rand 
+	
 	return self;
 }
 
@@ -155,10 +158,10 @@ int PDB_open(PDB *self)
 		return -1;
 	}
 	
-	tcbdbsetxmsiz(self->db, 1024*1024*1024); // 1GB
+	//tcbdbsetxmsiz(self->db, 1024*1024*64); 
 	
 	/*
-	if(!tcbdbtune(self->db, 0, 0, 0, -1, 10*1000*1000/10, HDBTLARGE))
+	if(!tcbdbtune(self->db, 0, 0, 0, -1, -1, BDBTDEFLATE)) // HDBTLARGE
 	{
 		Log_Printf("tcbdbtune failed\n");
 		return -1;
@@ -166,11 +169,13 @@ int PDB_open(PDB *self)
 	*/
 		
 	//commented out until our server has a reasonable amount of ram
+	/*
 	if (!tcbdbsetcache(self->db, 1024*100, 512*100))
 	{
 		Log_Printf("tcbdbsetcache failed\n");
 		return -1;
 	}
+	*/
 	
 	if (Datum_isEmpty(File_path(self->dbFile)))
 	{
@@ -222,8 +227,11 @@ void PDB_close(PDB *self)
 {
 	if (self->db)
 	{
-		PDB_abort(self);
+		PDB_commit(self); // right thing to do?
+		//PDB_abort(self);
+		Log_Printf("PDB: closing...\n");
 		tcbdbclose(self->db);
+		Log_Printf("PDB: closed\n");
 		self->db = 0x0;		
 		if (self->useBackups) File_remove(self->isOpenFile);
 	}
@@ -439,6 +447,16 @@ PNode *PDB_newNode(PDB *self)
 	return p;
 }
 
+int PDB_sync(PDB *self)
+{
+	if(!tcbdbsync(self->db))
+	{
+		PDB_fatalError_(self, "tcbdbsync");
+	}
+	
+	return 0;
+}
+
 int PDB_syncSizes(PDB *self)
 {
 	int max = 100000;
@@ -571,11 +589,14 @@ long PDB_sizeInMB(PDB *self)
 
 int Pointer_equals_(void *p1, void *p2)
 {
+	return (uintptr_t)p1 == (uintptr_t)p2;
+	/*
 	uintptr_t i1 = (uintptr_t)p1;
 	uintptr_t i2 = (uintptr_t)p2;
 	if(i1 == i2) return 0;
 	if(i1 < i2) return 1;
 	return -1;
+	*/
 }
 
 unsigned int Pointer_hash1(void *p)
