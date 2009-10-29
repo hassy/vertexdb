@@ -1,0 +1,30 @@
+
+ToDo
+
+- add tests to tests.io
+	- error conditions (highest priority)
+	- rm
+	- transactions
+	- collect garbage
+	- backup
+	- shutdown
+	- queuePopTo ttl
+	- chmod
+	- chown
+	- stat
+	- stats
+	- login?
+	- newuser? (lowest priority)
+
+- add http basic auth
+
+- make sure docs are in sync with code
+
+- add performance tests for:
+	- writes, removes, reads per second
+	- db size per number of writes
+	- possibly look into tokyocabinet tuning parameters
+
+- FUSE interface
+
+- start project to reimplement vertexdb in Lua or Javascript v8 with async sockets & tokyocabinet - this would allow us to use Lua or JS as a query language

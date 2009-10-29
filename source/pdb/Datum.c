@@ -1,4 +1,3 @@
-
 #include "Datum.h"
 #include "Common.h"
 #include "Hash_murmur.h"
@@ -338,8 +337,8 @@ int Datum_from_beforeChar_into_(Datum *self, unsigned int start, char c, Datum *
 	{
 		char *s = self->data + start;
 		char *m = strchr(s, c);
-		int len;
-		
+		int len = 0;
+			
 		if (m != NULL)
 		{
 			len = m - (self->data + start);
@@ -357,10 +356,3 @@ int Datum_from_beforeChar_into_(Datum *self, unsigned int start, char c, Datum *
 	
 	return -1;
 }
-
-/*
-int Datum_indexOfChar_(Datum *self, char c)
-{
-	
-}
-*/

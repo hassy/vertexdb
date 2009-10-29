@@ -59,8 +59,6 @@ struct fuse_operations {
 #include <event.h>
 #include <evhttp.h>
 
-#include <tcutil.h>
-#include <tcbdb.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -70,7 +68,6 @@ struct fuse_operations {
 #include "PQuery.h"
 
 #define USER_ID_LENGTH 12
-#define DISK_SYNC_ON_EACH_TRANSACTION 1
 //#define COMMIT_PERIODICALLY 1
 
 static VertexServer *globalVertexServer = 0x0;
@@ -124,7 +121,7 @@ VertexServer *VertexServer_new(void)
 
 	self->emptyDatum = Datum_new();
 	self->uriPath    = Datum_new(); 
-	self->staticPath = Datum_new(); 
+	//self->staticPath = Datum_new(); 
 
 	self->cookie     = Datum_new(); 
 	self->userPath   = Datum_new(); 
@@ -154,7 +151,7 @@ void VertexServer_free(VertexServer *self)
 	CHash_free(self->query);
 	Datum_free(self->emptyDatum);
 	Datum_free(self->uriPath);
-	Datum_free(self->staticPath);
+	//Datum_free(self->staticPath);
 
 	Datum_free(self->cookie);
 	Datum_free(self->userPath);
@@ -186,6 +183,7 @@ void VertexServer_setPort_(VertexServer *self, int port)
 	self->port = port;
 }
 
+/*
 void VertexServer_setStaticPath_(VertexServer *self, char *path)
 {
 	Datum_setCString_(self->staticPath, path);
@@ -193,8 +191,9 @@ void VertexServer_setStaticPath_(VertexServer *self, char *path)
 
 void VertexServer_showUri(VertexServer *self)
 {
-	printf("uriPath: '%s'\n", Datum_data(self->uriPath));
+	printf("request: '%s'\n", Datum_data(self->uriPath));
 }
+*/
 
 void *CHash_atString_(CHash *self, const char *s)
 {
@@ -207,6 +206,8 @@ void VertexServer_parseUri_(VertexServer *self, const char *uri)
 	int index;
 	Datum *uriDatum = POOL_ALLOC(self->pool, Datum);
 	Datum_setCString_(uriDatum, uri);
+	
+	if(self->debug) { Log_Printf_("request: %s\n", uri); }
 	
 	CHash_clear(self->query);
 	
@@ -226,9 +227,9 @@ void VertexServer_parseUri_(VertexServer *self, const char *uri)
 		index = Datum_from_beforeChar_into_(uriDatum, index + 1, '&', value);
 		Datum_decodeUri(value);
 		Datum_nullTerminate(value);
-		if (Datum_size(value) == 0) break;
 
 		CHash_at_put_(self->query, key, value);
+		if (Datum_size(value) == 0) break;
 	}	
 }
 
@@ -378,12 +379,10 @@ int VertexServer_api_read(VertexServer *self)
 
 	if (value) 
 	{
-		//Datum_appendQuoted_(self->result, value);
 		yajl_gen_datum(self->yajl, value);
 	}
 	else
 	{
-		//Datum_appendCString_(self->result, "null");
 		yajl_gen_null(self->yajl);
 	}
 	
@@ -398,12 +397,14 @@ int VertexServer_api_write(VertexServer *self)
 	Datum *key   = VertexServer_queryValue_(self, "key");
 	Datum *value = VertexServer_queryValue_(self, "value");
 	
+	/*
 	if(Datum_size(value) == 0)
 	{
 		value = self->post;
 		//VertexServer_setError_(self, "empty keys not accepted");
 		//return -1;
 	}
+	*/
 	
 	if (PNode_moveToPathIfExists_(node, self->uriPath) != 0) 
 	{
@@ -431,7 +432,6 @@ int VertexServer_api_link(VertexServer *self)
 	
 	Datum *key      = VertexServer_queryValue_(self, "key");
 	Datum *fromPath = self->uriPath;
-	//Datum *fromPath = VertexServer_queryValue_(self, "fromPath");
 	Datum *toPath   = VertexServer_queryValue_(self, "toPath");
 
 	if (PNode_moveToPathIfExists_(toNode, toPath) != 0) 
@@ -459,21 +459,20 @@ int VertexServer_api_transaction(VertexServer *self)
 	int error = 0;
 	int r, result;
 	
-	// for performance, do our commits at periodic checkpoints
-	#ifdef DISK_SYNC_ON_EACH_TRANSACTION
-		PDB_commit(self->pdb);
-	#endif
+	PDB_commit(self->pdb);
 	
 	do
 	{
 		Datum_copy_(uri, self->post);
 		r = Datum_sepOnChars_with_(uri, "\n", self->post);
 
-		if (Datum_size(uri) == 0) {
+		if (Datum_size(uri) == 0) 
+		{
 			VertexServer_setError_(self, "empty line in transaction");
 			error = 1;
 			break;
 		}
+		
 		VertexServer_parseUri_(self, Datum_data(uri));
 		error = VertexServer_process(self);
 		Pool_freeRefs(self->pool);
@@ -481,17 +480,12 @@ int VertexServer_api_transaction(VertexServer *self)
 	
 	if (error)
 	{
-		#ifdef DISK_SYNC_ON_EACH_TRANSACTION
-			PDB_abort(self->pdb);
-		#endif
+		PDB_abort(self->pdb);
 		result = -1;
 	}
 	else
 	{
-		#ifdef DISK_SYNC_ON_EACH_TRANSACTION
-			//printf("COMMIT\n\n");
-			PDB_commit(self->pdb);
-		#endif
+		PDB_commit(self->pdb);
 		result = 0;
 	}
 		
@@ -507,7 +501,6 @@ int VertexServer_api_mkdir(VertexServer *self)
 
 int VertexServer_api_queuePopTo(VertexServer *self)
 {
-	// example: http:localhost:8080/sites/amazon/crawl/waiting/?action=link&toPath=/sites/amazon/crawl/active
 	PNode *fromNode = PDB_allocNode(self->pdb);
 	PNode *toNode   = PDB_allocNode(self->pdb);
 	Datum *toPath   = VertexServer_queryValue_(self, "toPath");
@@ -532,7 +525,6 @@ int VertexServer_api_queuePopTo(VertexServer *self)
 		PNode_startQuery(fromNode);
 	
 		Datum *k = PQuery_key(q);
-		//Datum *k = PNode_key(fromNode);
 		Datum *v = PNode_value(fromNode);
 		
 		if (k)
@@ -559,7 +551,7 @@ int VertexServer_api_queuePopTo(VertexServer *self)
 			
 			//printf("queueing key %s\n", Datum_data(k));
 			yajl_gen_datum(self->yajl, k);
-			PNode_removeAtCursor(fromNode);
+			PNode_removeAt_(fromNode, k);
 		}
 		else
 		{
@@ -611,6 +603,8 @@ int VertexServer_api_queueExpireTo(VertexServer *self)
 				PNode_removeAt_(itemNode, qExpireKey);
 				PNode_atPut_(toNode, k, pid);
 				PNode_removeAtCursor(fromNode); // the remove will go to the next item
+				//PNode_removeAt_(fromNode, k);
+				//PNode_next(fromNode);
 				itemsExpired ++;
 			}
 			else
@@ -753,21 +747,19 @@ int VertexServer_api_backup(VertexServer *self)
 
 int VertexServer_api_collectGarbage(VertexServer *self)
 {
-	//Log_Printf("collectGarbage disabled until bug fixed\n");
-
 	time_t t1 = time(NULL);
-	long collectedCount; 
-	
-	collectedCount = PDB_collectGarbage(self->pdb);
-	
+	long savedCount = PDB_collectGarbage(self->pdb);
 	double dt = difftime(time(NULL), t1);
-	Datum_appendCString_(self->result, "collected ");
-	Datum_appendLong_(self->result, collectedCount);
-	Datum_appendCString_(self->result, " in ");
-	Datum_appendLong_(self->result, (long)dt);
-	Datum_appendCString_(self->result, " seconds");
-	Log_Printf__("collected %i slots in %f seconds\n", 
-		(int)collectedCount, (float)dt);
+	
+	yajl_gen_map_open(self->yajl);
+	yajl_gen_cstring(self->yajl, "saved");
+	yajl_gen_integer(self->yajl, savedCount);
+	yajl_gen_cstring(self->yajl, "seconds");
+	yajl_gen_integer(self->yajl, (int)dt);
+	yajl_gen_map_close(self->yajl);
+	
+	Datum_appendYajl_(self->result, self->yajl);
+	Log_Printf_("gc: %s\n", Datum_data(self->result));
 
 	return 0;
 }
@@ -937,7 +929,7 @@ int VertexServer_api_view(VertexServer *self)
 	}
 	
 	Datum_appendCString_(d, "</body>\n");
-	//Log_Printf("done request\n");
+
 	self->isHtml = 1;
 	return 0;
 }
@@ -1018,6 +1010,7 @@ void VertexServer_setupActions(VertexServer *self)
 	//VERTEX_SERVER_ADD_ACTION(syncSizes);
 	VERTEX_SERVER_ADD_ACTION(sync);
 	
+	// select ops
 	VERTEX_SERVER_ADD_OP(object);
 	VERTEX_SERVER_ADD_OP(sizes);
 	VERTEX_SERVER_ADD_OP(keys);
@@ -1052,6 +1045,12 @@ int VertexServer_process(VertexServer *self)
 	return -1;
 }
 
+void VertexServer_readAnyPostData(VertexServer *self)  
+{
+	struct evbuffer *evb = self->request->input_buffer;
+	Datum_setData_size_(self->post, (const char *)EVBUFFER_DATA(evb), EVBUFFER_LENGTH(evb));
+}
+
 void VertexServer_requestHandler(struct evhttp_request *req, void *arg)  
 {  
 	VertexServer *self = arg;
@@ -1062,10 +1061,7 @@ void VertexServer_requestHandler(struct evhttp_request *req, void *arg)
 	self->request = req;
 	VertexServer_setupYajl(self); 
 	
-	{
-		struct evbuffer *evb = self->request->input_buffer;
-		Datum_setData_size_(self->post, (const char *)EVBUFFER_DATA(evb), EVBUFFER_LENGTH(evb));
-	}
+	VertexServer_readAnyPostData(self);
 			
 	if (strcmp(uri, "/favicon.ico") == 0)
 	{
@@ -1192,11 +1188,15 @@ void VertexServer_setIsDaemon_(VertexServer *self, int isDaemon)
 	self->isDaemon = isDaemon;
 }
 
+void VertexServer_setDebug_(VertexServer *self, int aBool)
+{
+	self->debug = aBool;
+}
+
 void VertexServer_writePidFile(VertexServer *self)
 {
-	FILE *pidFile;
+	FILE *pidFile = fopen(self->pidPath, "w");
 	
-	pidFile = fopen(self->pidPath, "w");
 	if (!pidFile)
 	{
 		Log_Printf_("Unable to open pid file for writing: %s\n", self->pidPath);
@@ -1229,16 +1229,10 @@ void VertexServer_removePidFile(VertexServer *self)
 	}
 }
 
-int VertexServer_run(VertexServer *self)
-{  	
-	struct timeval tv;
-	tv.tv_sec = 1;
-	
-	Socket_SetDescriptorLimitToMax();
-	VertexServer_setupActions(self);
-	
+int VertexServer_openLog(VertexServer *self)
+{
 	Log_init();
-	
+
 	if (self->logPath)
 	{
 		Log_setPath_(self->logPath);
@@ -1256,7 +1250,37 @@ int VertexServer_run(VertexServer *self)
 		Log_Printf("Logging to stderr\n");
 	}
 	
-	Log_Printf("startup\n");
+	return 0;
+}
+
+void VertexServer_runEventLoop(VertexServer *self)
+{
+	event_init();
+	self->httpd = evhttp_start("127.0.0.1", 8080);
+	 
+	if (!self->httpd)
+	{
+		Log_Printf("evhttp_start failed - is another copy running on the same port?\n");
+		exit(-1);
+	}
+	
+	evhttp_set_timeout(self->httpd, 180);
+	evhttp_set_gencb(self->httpd, VertexServer_requestHandler, self);  
+	//Log_Printf_("libevent using: %s\n", event_get_action());
+	
+	while (!self->shutdown)
+	{
+		event_loop(EVLOOP_ONCE);
+	}
+}
+
+int VertexServer_run(VertexServer *self)
+{  	
+	Socket_SetDescriptorLimitToMax();
+	VertexServer_setupActions(self);
+	VertexServer_openLog(self);
+	Log_Printf("VertexServer_run\n");
+	
 	
 	if (self->isDaemon)
 	{
@@ -1274,7 +1298,7 @@ int VertexServer_run(VertexServer *self)
 		}
 	}
 	
-	VertexServer_setStaticPath_(self, "/Users/steve/Sites/stylous/client/");
+	//VertexServer_setStaticPath_(self, ".");
 	VertexServer_registerSignals(self);
 	
 	if (PDB_open(self->pdb)) 
@@ -1282,29 +1306,8 @@ int VertexServer_run(VertexServer *self)
 		Log_Printf("unable to open database file\n");
 		return -1; 
 	}
-	
-	/*
-	Log_Printf("warmup database...");
-	PDB_warmup(self->pdb);
-	Log_Printf("warmup done");
-	*/
-	event_init();
-	self->httpd = evhttp_start("0.0.0.0", 8080); 
-	 
-	if (!self->httpd)
-	{
-		Log_Printf("evhttp_start failed - is another copy running on the same port?\n");
-		exit(-1);
-	}
-	
-	evhttp_set_timeout(self->httpd, 60);
-	evhttp_set_gencb(self->httpd, VertexServer_requestHandler, self);  
-	//printf("libevent using: %s\n", event_get_action());
-	
-	while (!self->shutdown)
-	{
-		event_loop(EVLOOP_ONCE);
-	}
+
+	VertexServer_runEventLoop(self);
 	
 	PDB_commit(self->pdb);
 	evhttp_free(self->httpd);

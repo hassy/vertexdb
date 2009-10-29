@@ -7,12 +7,13 @@ Notes:
 #include "PQuery.h"
 #include "Log.h"
 #include "Datum.h"
+#include "Pointer.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
 
-//#define PDB_USE_TX 1
+#define PDB_USE_TX 1
 //#define PDB_USE_SYNC 1
 
 static int pathCompareBase(const char *p1, int len1, const char *p2, int len2, void *optionalOpaqueValue)
@@ -158,18 +159,18 @@ int PDB_open(PDB *self)
 		return -1;
 	}
 	
-	//tcbdbsetxmsiz(self->db, 1024*1024*64); 
 	
 	/*
+	//Tinkering with these seems to result in worse performance so far...
+	
+	tcbdbsetxmsiz(self->db, 1024*1024*64); 
+
 	if(!tcbdbtune(self->db, 0, 0, 0, -1, -1, BDBTDEFLATE)) // HDBTLARGE
 	{
 		Log_Printf("tcbdbtune failed\n");
 		return -1;
 	}
-	*/
-		
-	//commented out until our server has a reasonable amount of ram
-	/*
+
 	if (!tcbdbsetcache(self->db, 1024*100, 512*100))
 	{
 		Log_Printf("tcbdbsetcache failed\n");
@@ -449,6 +450,7 @@ PNode *PDB_newNode(PDB *self)
 
 int PDB_sync(PDB *self)
 {
+	PDB_commit(self);
 	if(!tcbdbsync(self->db))
 	{
 		PDB_fatalError_(self, "tcbdbsync");
@@ -529,13 +531,15 @@ long PDB_saveMarkedNodes(PDB *self)
 		PNode_setPidLong_(outNode, (long)k);
 		PNode_first(inNode);
 		
+		savedCount ++;
+		//printf("copying key %i saved count %i\n", (int)k, (int)savedCount);
+		 
 		while(PNode_key(inNode))
 		{
 			PNode_atPut_(outNode, PNode_key(inNode), PNode_value(inNode));
 			PNode_next(inNode);
 		}
 		
-		savedCount ++;
 		
 		if(savedCount % 10000 == 0) 
 		{
@@ -555,6 +559,12 @@ long PDB_saveMarkedNodes(PDB *self)
 	
 	PDB_open(self);
 
+	if(savedCount != (long)CHash_count(self->markedPids))
+	{
+		Log_Printf__("  PDB saved count of %i does not match markedPids count of %i\n", 
+			(int)savedCount, (int)CHash_count(self->markedPids));
+	}
+		
 	return savedCount;
 }
 
@@ -572,7 +582,7 @@ void PDB_markReachableNodes(PDB *self)
 		long pid = (long)List_pop(self->markQueue);
 		PNode_setPidLong_(aNode, pid);
 		PNode_mark(aNode);
-		i++;
+		i ++;
 		if (i % 10000 == 0) { Log_Printf_("    %i\n", (int)i); }
 	}
 	
@@ -584,35 +594,9 @@ long PDB_sizeInMB(PDB *self)
 	return (long)(tcbdbfsiz(self->db)/(1024*1024));
 }
 
-#include "Hash_murmur.h"
-#include "Hash_superfast.h"
-
-int Pointer_equals_(void *p1, void *p2)
-{
-	return (uintptr_t)p1 == (uintptr_t)p2;
-	/*
-	uintptr_t i1 = (uintptr_t)p1;
-	uintptr_t i2 = (uintptr_t)p2;
-	if(i1 == i2) return 0;
-	if(i1 < i2) return 1;
-	return -1;
-	*/
-}
-
-unsigned int Pointer_hash1(void *p)
-{
-	return MurmurHash2((const void *)&p, (int)sizeof(void *), 0);
-}
-
-unsigned int Pointer_hash2(void *p)
-{
-	return SuperFastHash((const char *)&p, (int)sizeof(void *));
-
-}
-
 long PDB_collectGarbage(PDB *self)
 {
-	long collectedCount = 0;
+	long savedCount = 0;
 
 	Log_Printf_("PDB collectGarbage, %iMB before collect:\n", (int)PDB_sizeInMB(self));
 
@@ -624,15 +608,15 @@ long PDB_collectGarbage(PDB *self)
 	self->markQueue  = List_new();
 	
 	PDB_markReachableNodes(self);
-	//collectedCount = PDB_removeUnmarkedNodes(self);
-	collectedCount = PDB_saveMarkedNodes(self);
+	savedCount = PDB_saveMarkedNodes(self);
 	
 	List_free(self->markQueue); self->markQueue = 0x0;
 	CHash_free(self->markedPids); self->markedPids = 0x0;
 	
 	PDB_commit(self);
 	Log_Printf_("  %iMB after collect:\n", (int)PDB_sizeInMB(self));
-	return collectedCount;
+
+	return savedCount;
 }
 
 int PDB_hasMarked_(PDB *self, long pid)
@@ -652,7 +636,6 @@ void PDB_addToMarkQueue_(PDB *self, long pid)
 /*
 void PDB_removeBackups(PDB *self)
 {
-
 }
 */
 
