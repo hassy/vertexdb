@@ -9,7 +9,9 @@ VDBAssertion := Object clone do(
     action ::= nil
     variant ::= "default"
     
-    baseUrl ::= "http://localhost:8080"
+	port ::= "9523"
+	host ::= "localhost"
+    baseUrl ::= method("http://" .. host .. ":" .. port)
     basePath ::= "/test"
     path ::= ""
     params ::= List clone
@@ -40,24 +42,41 @@ VDBAssertion := Object clone do(
         URL with(Sequence with(baseUrl, basePath, path, queryString))
     )
     
+	raise := method(m,
+		URL with(baseUrl .. "?action=log") post(m)
+        //Exception raise(m)
+		writeln(m)
+		Coroutine currentCoro backTraceString println
+		System exit
+	)
+
     assert := method(
         u := url
         setActualBody(u fetch)
         setActualStatusCode(u statusCode)
         
-        if(actualStatusCode != expectedStatusCode,
-            Exception raise(Sequence with(action, " action failed for \"", variant, "\" variant: \n", u url, "\nexpectedStatusCode ", expectedStatusCode asString, "\nactualStatusCode   ", actualStatusCode asString, "\nactualBody         ", actualBody))
-        )
-        
-        if(actualBody != expectedBody,
-            Exception raise(Sequence with(action, " action failed for \"", variant, "\" variant: \n", u url, "\nexpectedBody ", expectedBody, "\nactualBody   ", actualBody, "\n"))
-        )
+		assertStatusCode
+		assertBody
     )
+
+	assertStatusCode := method(
+		if(actualStatusCode != expectedStatusCode,
+			m := Sequence with(action, " action failed for \"", variant, "\" variant: \n", u url, "\nexpectedStatusCode ", expectedStatusCode asString, "\nactualStatusCode   ", actualStatusCode asString, "\nactualBody         ", actualBody)
+			raise(m)
+        )
+	)
+	
+	assertBody := method(
+		if(actualBody != expectedBody,
+            m := Sequence with(action, " action failed for \"", variant, "\" variant: \n", u url, "\nexpectedBody ", expectedBody, "\nactualBody   ", actualBody, "\n")
+			raise(m)
+        )
+	)
 )
 
 VDBTest := UnitTest clone do(
     setUp := method(
-        url := URL with("http://localhost:8080/?action=transaction")
+        url := URL with(VDBAssertion baseUrl .. "/?action=transaction")
         result := url post("/?action=select&op=rm
 /test/a?action=mkdir
 /test/a?action=write&key=_a&value=1
@@ -75,7 +94,7 @@ VDBTest := UnitTest clone do(
             Exception raise("Error in transaction setting up VDBTest: " .. result)
         )
     )
-    
+
     //reads
     ReadAssertion := VDBAssertion clone setAction("read")
     
@@ -92,7 +111,7 @@ VDBTest := UnitTest clone do(
     testSize := method(
         SizeAssertion clone setExpectedBody("3") assert
     )
-    
+
     SelectAssertion := VDBAssertion clone do(
         action ::= "select"
         op ::= nil
@@ -104,7 +123,8 @@ VDBTest := UnitTest clone do(
     )
     
     KeysAssertion := SelectAssertion clone setOp("keys")
-    
+
+
     testSelectKeys := method(
         KeysAssertion clone setExpectedBody("""["a","b","c"]""") assert
         KeysAssertion with("count") addParams("count=1") setExpectedBody("""["a"]""") assert
@@ -135,6 +155,57 @@ VDBTest := UnitTest clone do(
         ValuesAssertion with("where") addParams("whereKey=_b", "whereValue=5") setExpectedBody("""[{"_a":"4","_b":"5","_c":"6"},{"_a":"7","_b":"5","_c":"9"}]""") assert
         ValuesAssertion with("non-matching where") addParams("whereKey=_a", "whereValue=10") setExpectedBody("[]") assert
     )
+
+	testSelectValuesWithBeforeUsingTimstamps := method(
+		url := URL with(VDBAssertion baseUrl .. "/?action=transaction")
+	    result := url post("/?action=select&op=rm
+/test/2009-10-28@19:49:54.426298?action=mkdir
+/test/2009-10-28@20:50:37.286256?action=mkdir
+/test/2009-10-28@21:50:40.701332?action=mkdir
+/test/2009-10-28@22:50:43.140329?action=mkdir
+/test/2009-10-29@04:21:29.198273?action=mkdir
+/test/2009-10-29@05:21:31.891355?action=mkdir
+/test/2009-10-29@10:34:43.125098?action=mkdir
+/test/2009-10-29@11:34:46.198658?action=mkdir
+/test/2009-10-29@16:34:57.237118?action=mkdir
+/test/2009-10-29@17:35:00.146650?action=mkdir")
+	    if(url statusCode == 500,
+	        Exception raise("Error in transaction setting up testSelectValuesWithBeforeUsingTimstamps: " .. result)
+	    )
+
+		ValuesAssertion with("before") addParams("before=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", "count=1") setExpectedBody("[{}]") assert
+	)
+
+	CountAssertion := SelectAssertion clone setOp("count")
+
+    testSelectCount := method(
+        CountAssertion clone setExpectedBody("3") assert
+        CountAssertion with("count") addParams("count=1") setExpectedBody("1") assert
+        CountAssertion with("after") addParams("after=a") setExpectedBody("2") assert
+        CountAssertion with("before") addParams("before=b") setExpectedBody("1") assert
+        CountAssertion with("where") addParams("whereKey=_b", "whereValue=5") setExpectedBody("2") assert
+        CountAssertion with("non-matching where") addParams("whereKey=_a", "whereValue=10") setExpectedBody("0") assert
+    )
+
+	testSelectCountWithAfterUsingTimstamps := method(
+		url := URL with(VDBAssertion baseUrl .. "/?action=transaction")
+        result := url post("/?action=select&op=rm
+/test/2009-10-28@19:49:54.426298?action=mkdir
+/test/2009-10-28@20:50:37.286256?action=mkdir
+/test/2009-10-28@21:50:40.701332?action=mkdir
+/test/2009-10-28@22:50:43.140329?action=mkdir
+/test/2009-10-29@04:21:29.198273?action=mkdir
+/test/2009-10-29@05:21:31.891355?action=mkdir
+/test/2009-10-29@10:34:43.125098?action=mkdir
+/test/2009-10-29@11:34:46.198658?action=mkdir
+/test/2009-10-29@16:34:57.237118?action=mkdir
+/test/2009-10-29@17:35:00.146650?action=mkdir")
+        if(url statusCode == 500,
+            Exception raise("Error in transaction setting up testSelectCountWithAfterUsingTimstamps: " .. result)
+        )
+
+		CountAssertion with("after") addParams("after=2009-10-29@12:46:17.533484") setExpectedBody("2") assert
+	)
     
     SizesAssertion := SelectAssertion clone setOp("sizes")
 
@@ -173,9 +244,9 @@ VDBTest := UnitTest clone do(
         RmAssertion with("non-matching where") addParams("whereKey=_a", "whereValue=10") setExpectedBody("0") assert
         PairsAssertion with("rm non-matching where") setExpectedBody("""[["a",{"_a":"1","_b":"2","_c":"3"}],["b",{"_a":"4","_b":"5","_c":"6"}],["c",{"_a":"7","_b":"5","_c":"9"}]]""") assert
     )
-    
+
     ObjectAssertion := SelectAssertion clone setOp("object")
-    
+
     testSelectObject := method(
         ObjectAssertion clone setPath("/a") setExpectedBody("""{"_a":"1","_b":"2","_c":"3"}""") assert
     )
@@ -202,7 +273,7 @@ VDBTest := UnitTest clone do(
     
     QueuePopToAssertion := VDBAssertion clone setAction("queuePopTo")
     testQueuePopTo := method(
-        u := URL with("http://localhost:8080/?action=transaction")
+        u := URL with(VDBAssertion baseUrl .. "/?action=transaction")
         r := u post(
 "/test/queue/waiting?action=mkdir
 /test/queue/waiting/a?action=mkdir
@@ -225,10 +296,56 @@ VDBTest := UnitTest clone do(
         SizeAssertion with("third queuePopTo waiting") clone setPath("/queue/waiting") setExpectedBody("0") assert
         SizeAssertion with("third queuePopTo active") clone setPath("/queue/active") setExpectedBody("2") assert
     )
-    
+
+	testQueuePopToWithTimestamps := method(
+		url := URL with(VDBAssertion baseUrl .. "/?action=transaction")
+        result := url post("/?action=select&op=rm
+/test/active?action=mkdir
+/test/waiting/2009-10-28@19:49:54.426298?action=mkdir
+/test/waiting/2009-10-28@20:50:37.286256?action=mkdir
+/test/waiting/2009-10-28@21:50:40.701332?action=mkdir
+/test/waiting/2009-10-28@22:50:43.140329?action=mkdir
+/test/waiting/2009-10-29@04:21:29.198273?action=mkdir
+/test/waiting/2009-10-29@05:21:31.891355?action=mkdir
+/test/waiting/2009-10-29@10:34:43.125098?action=mkdir
+/test/waiting/2009-10-29@11:34:46.198658?action=mkdir
+/test/waiting/2009-10-29@16:34:57.237118?action=mkdir
+/test/waiting/2009-10-29@17:35:00.146650?action=mkdir")
+        if(url statusCode == 500,
+            Exception raise("Error in transaction setting up testQueuePopToWithTimestamps: " .. result)
+        )
+
+	    QueuePopToAssertion setPath("/waiting") addParams("toPath=/test/active") setExpectedBody("\"2009-10-28@19:49:54.426298\"") assert
+		SizeAssertion setPath("/active") setExpectedBody("1") assert
+		SizeAssertion setPath("/waiting") setExpectedBody("9") assert
+	)
+	
+	testQueueExpireToShouldNotEmptyToPath := method(
+		url := URL with(VDBAssertion baseUrl .. "/?action=transaction")
+        result := url post("/?action=select&op=rm
+/test/active?action=mkdir
+/test/waiting/2009-10-28@19:49:54.426298?action=mkdir
+/test/waiting/2009-10-28@20:50:37.286256?action=mkdir
+/test/waiting/2009-10-28@21:50:40.701332?action=mkdir
+/test/waiting/2009-10-28@22:50:43.140329?action=mkdir
+/test/waiting/2009-10-29@04:21:29.198273?action=mkdir
+/test/waiting/2009-10-29@05:21:31.891355?action=mkdir
+/test/waiting/2009-10-29@10:34:43.125098?action=mkdir
+/test/waiting/2009-10-29@11:34:46.198658?action=mkdir
+/test/waiting/2009-10-29@16:34:57.237118?action=mkdir
+/test/waiting/2009-10-29@17:35:00.146650?action=mkdir")
+        if(url statusCode == 500,
+            Exception raise("Error in transaction setting up testQueuePopToWithTimestamps: " .. result)
+        )
+
+	    QueueExpireToAssertion setPath("/active") addParams("toPath=/test/waiting") setExpectedBody("0") assert
+		SizeAssertion setPath("/active") setExpectedBody("0") assert
+		SizeAssertion setPath("/waiting") setExpectedBody("10") assert
+	)
+
     QueueExpireToAssertion := VDBAssertion clone setAction("queueExpireTo")
     testQueueExpireTo := method(
-        u := URL with("http://localhost:8080/?action=transaction")
+        u := URL with(VDBAssertion baseUrl .. "/?action=transaction")
         r := u post(
 "/test/queue/waiting?action=mkdir
 /test/queue/active?action=mkdir
@@ -247,7 +364,6 @@ VDBTest := UnitTest clone do(
 
         QueueExpireToAssertion with("first") setPath("/queue/active") addParams("toPath=/test/queue/waiting") setExpectedBody("1") assert
         ObjectAssertion with("first queueExpireTo") clone setPath("/queue/waiting/a") setExpectedBody("""{"_a":"1"}""") assert
-        
         QueueExpireToAssertion with("second") setPath("/queue/active") addParams("toPath=/test/queue/waiting") setExpectedBody("0") assert
         KeysAssertion with("second queueExpireTo") clone setPath("/queue/active/b") setExpectedBody("""["_a","_qexpire","_qtime"]""") assert
     )
@@ -256,15 +372,24 @@ VDBTest := UnitTest clone do(
 VDBTest run
 
 CollectGarbageTest := UnitTest clone do(
-    CollectGarbageAssertion := VDBAssertion clone setAction("collectGarbage")
+    CollectGarbageAssertion := VDBAssertion clone setAction("collectGarbage") do(
+		expectedBodyPrefix ::= nil
+		
+    	assertBody := method(
+    		if(actualBody beginsWithSeq(expectedBodyPrefix) not,
+	            m := Sequence with(action, " action failed for \"", variant, "\" variant: \n", url url, "\nexpectedBodyPrefix ", expectedBodyPrefix, "\nactualBody         ", actualBody, "\n")
+				raise(m)
+	        )
+    	)
+    )
     testCollectGarbage := method(
-		URL with("http://localhost:8080/?action=select&op=rm") fetch
-        URL with("http://localhost:8080/?action=collectGarbage") fetch
-        URL with("http://localhost:8080/a/b?action=mkdir") fetch
-        URL with("http://localhost:8080/a/c?action=mkdir") fetch
-        URL with("http://localhost:8080/a/d?action=mkdir") fetch
-        URL with("http://localhost:8080/a?action=select&op=rm") fetch
-        CollectGarbageAssertion setBasePath("/") setExpectedBody("""{"saved":2,"seconds":0}""") assert
+		URL with(VDBAssertion baseUrl .. "/?action=select&op=rm") fetch
+        URL with(VDBAssertion baseUrl .. "/?action=collectGarbage") fetch
+        URL with(VDBAssertion baseUrl .. "/a/b?action=mkdir") fetch
+        URL with(VDBAssertion baseUrl .. "/a/c?action=mkdir") fetch
+        URL with(VDBAssertion baseUrl .. "/a/d?action=mkdir") fetch
+        URL with(VDBAssertion baseUrl .. "/a?action=select&op=rm") fetch
+        CollectGarbageAssertion setBasePath("/") setExpectedBodyPrefix("""{"saved":2,"seconds":""") assert
     )
 )
 

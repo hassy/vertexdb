@@ -10,12 +10,7 @@ extern "C" {
 #include <sys/time.h>  
 #include <stdlib.h>  
 
-#include <err.h>  
-#include <event.h>  
-#include <evhttp.h>  
-
-#include <tcutil.h>
-#include <tcbdb.h>
+#include "Store.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -26,13 +21,11 @@ extern "C" {
 typedef struct
 {
 	void *pdb;
-	BDBCUR *cursor;
+	StoreCursor *storeCursor;
 	
 	Datum *pid;
 	Datum *pidPath;
-	Datum *key;
 	Datum *keyPath;
-	Datum *value;
 	
 	Datum *sizePath;
 	Datum *parentPid;
@@ -43,7 +36,9 @@ typedef struct
 
 typedef int (PNodeOp)(PNode *, Datum *);
 
+
 // creation and setup
+PNode *PNode_poolNew(void);
 PNode *PNode_new(void);
 void PNode_setYajl_(PNode *self, yajl_gen y);
 void PNode_setPdb_(PNode *self, void *pdb);
@@ -82,6 +77,7 @@ PQuery *PNode_startQuery(PNode *self);
 int PNode_doesExist(PNode *self);
 void PNode_first(PNode *self);
 void PNode_jump_(PNode *self, Datum *k);
+void PNode_jumpToCurrentKey(PNode *self);
 int PNode_next(PNode *self);
 int PNode_previous(PNode *self);
 void PNode_removeAtCursor(PNode *self);
@@ -127,6 +123,9 @@ int PNode_op_html(PNode *self, Datum *d);
 // permissions
 Datum *PNode_op_owner(PNode *self);
 Datum *PNode_op_public(PNode *self);
+
+// debugging
+void PNode_show(PNode *self);
 
 #ifdef __cplusplus
 }

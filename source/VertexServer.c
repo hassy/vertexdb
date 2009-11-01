@@ -3,12 +3,6 @@
 	See http://www.w3.org/Protocols/rfc2616/rfc2616-sec6.html 
 	for valid response headers
 
-bool tcbdbput(TCBDB *bdb, const void *kbuf, int ksiz, const void *vbuf, int vsiz);
-bool tcbdbputcat(TCBDB *bdb, const void *kbuf, int ksiz, const void *vbuf, int vsiz);
-bool tcbdbout(TCBDB *bdb, const void *kbuf, int ksiz);
-void *tcbdbget(TCBDB *bdb, const void *kbuf, int ksiz, int *sp);
-int tcbdbvsiz(TCBDB *bdb, const void *kbuf, int ksiz);
-
 struct fuse_operations {
     int (*mkdir) (const char *, mode_t);
     int (*rmdir) (const char *);
@@ -102,7 +96,6 @@ VertexServer *VertexServer_new(void)
 	self->pdb   = PDB_new();
 	VertexServer_setupYajl(self);
 	
-	self->pool  = Pool_new();
 	
 	self->query = CHash_new();	
 	CHash_setEqualFunc_(self->query, (CHashEqualFunc *)Datum_equals_);
@@ -144,7 +137,7 @@ VertexServer *VertexServer_new(void)
 void VertexServer_free(VertexServer *self)
 {
 	PDB_free(self->pdb);
-	Pool_free(self->pool);
+	Pool_freeGlobalPool();
 	
 	CHash_free(self->actions);
 	CHash_free(self->ops);
@@ -204,7 +197,7 @@ void *CHash_atString_(CHash *self, const char *s)
 void VertexServer_parseUri_(VertexServer *self, const char *uri)
 {
 	int index;
-	Datum *uriDatum = POOL_ALLOC(self->pool, Datum);
+	Datum *uriDatum = Datum_poolNew();
 	Datum_setCString_(uriDatum, uri);
 	
 	if(self->debug) { Log_Printf_("request: %s\n", uri); }
@@ -216,8 +209,8 @@ void VertexServer_parseUri_(VertexServer *self, const char *uri)
 	
 	for (;;)
 	{
-		Datum *key   = POOL_ALLOC(self->pool, Datum);
-		Datum *value = POOL_ALLOC(self->pool, Datum);
+		Datum *key   = Datum_poolNew();
+		Datum *value = Datum_poolNew();
 		
 		index = Datum_from_beforeChar_into_(uriDatum, index + 1, '=', key);
 		Datum_decodeUri(key);
@@ -475,7 +468,7 @@ int VertexServer_api_transaction(VertexServer *self)
 		
 		VertexServer_parseUri_(self, Datum_data(uri));
 		error = VertexServer_process(self);
-		Pool_freeRefs(self->pool);
+		Pool_globalPoolFreeRefs();
 	} while ((r != -1) && (!error));
 	
 	if (error)
@@ -536,17 +529,15 @@ int VertexServer_api_queuePopTo(VertexServer *self)
 			{
 				long now = time(NULL);
 				
-				Datum *timeKey   = Datum_newWithCString_("_qtime");
-				Datum *timeValue = Datum_new();
+				Datum *timeKey   = Datum_poolNewWithCString_("_qtime");
+				Datum *timeValue = Datum_poolNew();
+				
 				Datum_fromLong_(timeValue, now);
 				PNode_atPut_(toNode, timeKey, timeValue);
 				
 				Datum_setCString_(timeKey, "_qexpire");
 				Datum_fromLong_(timeValue, now + (ttl == 0 ? 3600 : ttl));
 				PNode_atPut_(toNode, timeKey, timeValue);
-
-				Datum_free(timeKey);
-				Datum_free(timeValue);
 			}
 			
 			//printf("queueing key %s\n", Datum_data(k));
@@ -579,7 +570,14 @@ int VertexServer_api_queueExpireTo(VertexServer *self)
 		return -1;
 	}
 	
-	PNode_moveToPath_(toNode, toPath);
+	//PNode_moveToPath_(toNode, toPath);
+	if (PNode_moveToPathIfExists_(toNode, toPath) != 0) 
+	{
+		VertexServer_setError_(self, "to path does not exist: ");
+		VertexServer_appendErrorDatum_(self, toPath);
+		return -1;
+	}
+	
 	
 	PNode_first(fromNode);
 	
@@ -593,18 +591,31 @@ int VertexServer_api_queueExpireTo(VertexServer *self)
 		{
 			Datum *pid = PNode_value(fromNode);
 			Datum *qExpireValue;
-			
+						
 			PNode_setPid_(itemNode, pid);
 			qExpireValue = PNode_at_(itemNode, qExpireKey);
 			
+
+			if(!qExpireValue)
+			{
+				Log_Printf("WARNING: attempt to expire a node with no _qexpire value\n");
+ 
+				if(PNode_at_(itemNode, qTimeKey) == 0x0)
+				{
+					Log_Printf("WARNING: node also missing _qtime value\n");
+				}
+				
+				break;
+			}
+			
 			if(qExpireValue == 0x0 || Datum_asLong(qExpireValue) < now)
 			{
+				PNode_removeAtCursor(fromNode); // the remove will go to the next item
+				PNode_key(fromNode);
 				PNode_removeAt_(itemNode, qTimeKey);
 				PNode_removeAt_(itemNode, qExpireKey);
 				PNode_atPut_(toNode, k, pid);
-				PNode_removeAtCursor(fromNode); // the remove will go to the next item
-				//PNode_removeAt_(fromNode, k);
-				//PNode_next(fromNode);
+				PNode_jumpToCurrentKey(fromNode);
 				itemsExpired ++;
 			}
 			else
@@ -619,7 +630,6 @@ int VertexServer_api_queueExpireTo(VertexServer *self)
 	
 	yajl_gen_integer(self->yajl, (long)itemsExpired);
 	Datum_appendYajl_(self->result, self->yajl);
-	
 	return 0;
 }
 
@@ -785,6 +795,14 @@ int VertexServer_api_syncSizes(VertexServer *self)
 int VertexServer_api_sync(VertexServer *self)
 {
 	PDB_sync(self->pdb);
+	return 0;
+}
+
+int VertexServer_api_log(VertexServer *self)
+{
+	Log_Printf("LOG -----------------------------\n\n");
+	printf("%s\n", Datum_data(self->post));
+	printf("\n---------------------------------\n");
 	return 0;
 }
 
@@ -1009,6 +1027,7 @@ void VertexServer_setupActions(VertexServer *self)
 	VERTEX_SERVER_ADD_ACTION(view);
 	//VERTEX_SERVER_ADD_ACTION(syncSizes);
 	VERTEX_SERVER_ADD_ACTION(sync);
+	VERTEX_SERVER_ADD_ACTION(log);
 	
 	// select ops
 	VERTEX_SERVER_ADD_OP(object);
@@ -1038,7 +1057,6 @@ int VertexServer_process(VertexServer *self)
 	{
 		return VertexServer_api_view(self);
 	}
-
 	
 	Datum_appendCString_(self->error, "invalid action");
 
@@ -1117,6 +1135,12 @@ void VertexServer_requestHandler(struct evhttp_request *req, void *arg)
 				Datum_setYajl_(self->error, self->yajl);
 				
 				evbuffer_add_printf(buf, "%s", Datum_data(self->error));
+				
+				if(self->debug) 
+				{
+					Log_Printf_("REQUEST ERROR: %s\n", Datum_data(self->error));
+				}
+				
 				Datum_setSize_(self->error, 0);
 			}
 			else
@@ -1142,8 +1166,7 @@ void VertexServer_requestHandler(struct evhttp_request *req, void *arg)
 	}
 
 	self->requestCount ++;
-	Pool_freeRefs(self->pool);
-	PDB_freeNodes(self->pdb);
+	Pool_globalPoolFreeRefs();
 }
 
 int VertexServer_api_shutdown(VertexServer *self)
@@ -1191,6 +1214,11 @@ void VertexServer_setIsDaemon_(VertexServer *self, int isDaemon)
 void VertexServer_setDebug_(VertexServer *self, int aBool)
 {
 	self->debug = aBool;
+}
+
+void VertexServer_setHardSync_(VertexServer *self, int aBool)
+{
+	self->hardSync = 1;
 }
 
 void VertexServer_writePidFile(VertexServer *self)
@@ -1256,7 +1284,7 @@ int VertexServer_openLog(VertexServer *self)
 void VertexServer_runEventLoop(VertexServer *self)
 {
 	event_init();
-	self->httpd = evhttp_start("127.0.0.1", 8080);
+	self->httpd = evhttp_start("127.0.0.1", self->port);
 	 
 	if (!self->httpd)
 	{
@@ -1300,6 +1328,8 @@ int VertexServer_run(VertexServer *self)
 	
 	//VertexServer_setStaticPath_(self, ".");
 	VertexServer_registerSignals(self);
+	
+	PDB_setHardSync_(self->pdb, self->hardSync);
 	
 	if (PDB_open(self->pdb)) 
 	{ 

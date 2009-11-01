@@ -14,6 +14,7 @@ extern "C" {
 #include "CHash.h"
 #include "Pool.h"
 #include "Yajl_extras.h"
+#include "Store.h"
 
 typedef struct
 {
@@ -23,8 +24,8 @@ typedef struct
 	File *newBackupFile;
 	File *corruptFile;
 	
-	TCBDB *db;
-	Datum *unusedPid;
+	Store *store;
+
 	int inTransaction;
 	size_t writeByteCount;
 	
@@ -35,8 +36,9 @@ typedef struct
 	
 	Datum *currentUser;
 		
-	Pool *pool;
 	yajl_gen yajl;
+	int isClosing;
+	int hardSync;
 } PDB;
 
 PDB *PDB_new(void);
@@ -45,13 +47,14 @@ void PDB_free(PDB *self);
 
 // node caching -------------
 PNode *PDB_allocNode(PDB *self);
-Datum *PDB_allocDatum(PDB *self);
 void PDB_freeNodes(PDB *self);
 
 // open/close ------------
 void PDB_setPathCString_(PDB *self, const char *path);
 int PDB_open(PDB *self);
 void PDB_close(PDB *self);
+
+void PDB_setHardSync_(PDB *self, int aBool);
 
 // clean shutdown ------------
 void PDB_setUseBackups_(PDB *self, int aBool);
@@ -80,7 +83,7 @@ int PDB_syncSizes(PDB *self);
 long PDB_collectGarbage(PDB *self); // returns # of nodes kept
 int PDB_hasMarked_(PDB *self, long pid);
 void PDB_addToMarkQueue_(PDB *self, long pid);
-void PDB_warmup(PDB *self);
+//void PDB_warmup(PDB *self);
 int PDB_sync(PDB *self);
 
 

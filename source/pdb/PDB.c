@@ -1,7 +1,3 @@
-/*
-Notes:
-	tcbdboptimize() only works on hash dbs, so we can't use it - use collectgarbage instead
-*/
 
 #include "PDB.h"
 #include "PQuery.h"
@@ -14,7 +10,6 @@ Notes:
 #include <assert.h>
 
 #define PDB_USE_TX 1
-//#define PDB_USE_SYNC 1
 
 static int pathCompareBase(const char *p1, int len1, const char *p2, int len2, void *optionalOpaqueValue)
 {
@@ -68,9 +63,9 @@ PDB *PDB_new(void)
 	self->lastBackupFile = File_new();
 	self->newBackupFile = File_new();
 	self->corruptFile = File_new();
-	self->unusedPid = Datum_new();
+	//self->unusedPid = Datum_new();
 	self->useBackups = 1;
-	self->pool = Pool_new();
+	self->store = Store_new();
 	
 	srand(time(NULL)); // need to do because Datum_makePid64 uses rand 
 	
@@ -83,17 +78,15 @@ void PDB_setYajl_(PDB *self, yajl_gen y)
 }
 
 void PDB_free(PDB *self)
-{
-	PDB_freeNodes(self);
-	
+{	
 	PDB_close(self);
+	Store_free(self->store);
 	File_free(self->dbFile);
 	File_free(self->isOpenFile);
 	File_free(self->lastBackupFile);
 	File_free(self->newBackupFile);
 	File_free(self->corruptFile);
-	Datum_free(self->unusedPid);
-	Pool_free(self->pool);
+	//Datum_free(self->unusedPid);
 	self->yajl = 0x0;
 	free(self);
 }
@@ -102,22 +95,11 @@ void PDB_free(PDB *self)
 
 PNode *PDB_allocNode(PDB *self)
 {
-	PNode *node = POOL_ALLOC(self->pool, PNode);
+	PNode *node = PNode_poolNew();
 	PNode_setPdb_(node, self);
 	PNode_setToRoot(node);
-	assert(self->yajl);
 	PNode_setYajl_(node, self->yajl);
 	return node;
-}
-
-Datum *PDB_allocDatum(PDB *self)
-{
-	return POOL_ALLOC(self->pool, Datum);
-}
-
-void PDB_freeNodes(PDB *self)
-{
-	Pool_freeRefs(self->pool);
 }
 
 // open/close ------------
@@ -136,47 +118,28 @@ void PDB_setPathCString_(PDB *self, const char *path)
 	Datum_appendCString_(File_path(self->corruptFile), ".corrupt");
 }
 
+void PDB_setHardSync_(PDB *self, int aBool)
+{
+	self->hardSync = aBool;
+}
+
 void PDB_createRootIfNeeded(PDB *self)
 {
 	int size;
 	const char *p = "1/m/size"; // 1 == root node
 	
-	if(!tcbdbget(self->db, p, strlen(p), &size))
+	if(!Store_read(self->store, (char *)p, strlen(p), &size))
 	{
 		PDB_begin(self);
-		tcbdbput(self->db, p, strlen(p), "0", 1);
+		Store_write(self->store, (char *)p, strlen(p), "0", 1);
 		PDB_commit(self);
 	}
 }
 	
 int PDB_open(PDB *self)
 {
-	self->db = tcbdbnew();
-
-	if (!tcbdbsetcmpfunc(self->db, pathCompare, NULL))
-	{
-		Log_Printf("tcbdbsetcmpfunc failed\n");
-		return -1;
-	}
-	
-	
-	/*
-	//Tinkering with these seems to result in worse performance so far...
-	
-	tcbdbsetxmsiz(self->db, 1024*1024*64); 
-
-	if(!tcbdbtune(self->db, 0, 0, 0, -1, -1, BDBTDEFLATE)) // HDBTLARGE
-	{
-		Log_Printf("tcbdbtune failed\n");
-		return -1;
-	}
-
-	if (!tcbdbsetcache(self->db, 1024*100, 512*100))
-	{
-		Log_Printf("tcbdbsetcache failed\n");
-		return -1;
-	}
-	*/
+	Store_setCompareFunction_(self->store, pathCompare);
+	Store_setHardSync_(self->store, self->hardSync);
 	
 	if (Datum_isEmpty(File_path(self->dbFile)))
 	{
@@ -194,17 +157,10 @@ int PDB_open(PDB *self)
 	}
 	
 	{
-		int flags = BDBOWRITER | BDBOCREAT | BDBONOLCK;
-		
-		/*
-		#ifdef PDB_USE_SYNC
-		flags |= BDBOTSYNC;
-		#endif
-		*/
-		
-		if (!tcbdbopen(self->db, File_pathCString(self->dbFile), flags ))
+		Store_setPath_(self->store, File_pathCString(self->dbFile));
+		if (!Store_open(self->store))
 		{
-			Log_Printf("tcbdbopen failed\n");
+			Log_Printf("open failed\n");
 			return -1;
 		}
 	}
@@ -214,11 +170,17 @@ int PDB_open(PDB *self)
 	{
 		File_create(self->isOpenFile);
 		
+		/*
 		if (!PDB_hasLastBackup(self)) 
 		{
 			Log_Printf("PDB: no backup found - creating one to be safe\n");
 			PDB_backup(self);
 		}
+		*/
+		
+		Log_Printf("PDB: making startup backup\n");
+		PDB_backup(self);
+
 	}
 	
 	return 0;
@@ -226,15 +188,18 @@ int PDB_open(PDB *self)
 
 void PDB_close(PDB *self)
 {
-	if (self->db)
+	//if (self->store)
+	if(!self->isClosing)
 	{
+		self->isClosing = 1;
 		PDB_commit(self); // right thing to do?
 		//PDB_abort(self);
 		Log_Printf("PDB: closing...\n");
-		tcbdbclose(self->db);
+		Store_close(self->store);
 		Log_Printf("PDB: closed\n");
-		self->db = 0x0;		
+		//self->store = 0x0;		
 		if (self->useBackups) File_remove(self->isOpenFile);
+		self->isClosing = 0;
 	}
 }
 
@@ -271,7 +236,7 @@ int PDB_backup(PDB *self) // returns "true" if successful
 	PDB_setNewBackupPath(self);
 	path = Datum_data(File_path(self->newBackupFile));
 	Log_Printf_("PDB creating backup: %s\n", path);
-	result = tcbdbcopy(self->db, path); //tc will create a .wal file
+	result = Store_backup(self->store, path);
 	File_symbolicallyLinkTo_(self->newBackupFile, self->lastBackupFile);
 	Log_Printf("PDB done creating backup\n");
 	return !result;
@@ -301,7 +266,8 @@ int PDB_replaceDbWithLastBackUp(PDB *self)
 
 void PDB_fatalError_(PDB *self, char *s)
 {
-	Log_Printf__("%s failed: %s\n", s, tcbdberrmsg(tcbdbecode(self->db)));
+	Log_Printf__("%s failed: %s\n", s, Store_error(self->store));
+	PDB_close(self);
 	exit(-1);
 }
 
@@ -317,9 +283,9 @@ void PDB_begin(PDB *self)
 	if(self->inTransaction) return;
 	
 	#ifdef PDB_USE_TX
-	if (!tcbdbtranbegin(self->db))
+	if (!Store_begin(self->store))
 	{
-		PDB_fatalError_(self, "tcbdbtranbegin");
+		PDB_fatalError_(self, "transaction begin");
 	}
 	else
 	#endif
@@ -333,9 +299,9 @@ void PDB_abort(PDB *self)
 	if (!self->inTransaction) return;
 
 	#ifdef PDB_USE_TX
-	if (!tcbdbtranabort(self->db))
+	if (!Store_abort(self->store))
 	{
-		PDB_fatalError_(self, "tcbdbtranabort");
+		PDB_fatalError_(self, "transaction abort");
 	}
 	#endif
 
@@ -353,25 +319,12 @@ void PDB_commit(PDB *self)
 	//Log_Printf("committing...\n");
 
 	#ifdef PDB_USE_TX
-	if (!tcbdbtrancommit(self->db))
+	if (!Store_commit(self->store))
 	{
-		PDB_fatalError_(self, "tcbdbtrancommit");
+		PDB_fatalError_(self, "transaction commit");
 	}
-	#else
-	/*
-	if(!tcbdbsync(self->db))
-	{
-		PDB_fatalError_(self, "tcbdbsync");
-	}
-	*/
 	#endif
-	
-	/*
-	Log_Printf___("commit took %i seconds, %i records, %iMB\n", 
-		(int)difftime(time(NULL), now),
-		(int)tcbdbrnum(self->db), 
-		(int)(tcbdbfsiz(self->db)/(1024*1024)));
-	*/
+
 	
 	self->writeByteCount = 0;
 	self->inTransaction = 0;
@@ -381,8 +334,7 @@ void PDB_commit(PDB *self)
 
 void *PDB_at_(PDB *self, const char *k, int ksize, int *vsize)
 {
-	void *v = tcbdbget(self->db, k, ksize, vsize);
-	//PDB_fatalError_(self, "tcbdbput");
+	void *v = Store_read(self->store, k, ksize, vsize);
 	return v;
 }
 
@@ -390,9 +342,9 @@ int PDB_at_put_(PDB *self, const char *k, int ksize, const char *v, int vsize)
 {
 	PDB_willWrite(self);
 	
-	if(!tcbdbput(self->db, k, ksize, v, vsize))
+	if(!Store_write(self->store, k, ksize, v, vsize))
 	{
-		PDB_fatalError_(self, "tcbdbput");
+		PDB_fatalError_(self, "write");
 		return 0;
 	}
 
@@ -406,9 +358,9 @@ int PDB_at_cat_(PDB *self, const char *k, int ksize, const char *v, int vsize)
 {
 	PDB_willWrite(self);
 	
-	if(!tcbdbputcat(self->db, k, ksize, v, vsize))
+	if(!Store_append(self->store, k, ksize, v, vsize))
 	{
-		PDB_fatalError_(self, "tcbdbput");
+		PDB_fatalError_(self, "put");
 		return 0;
 	}
 
@@ -423,9 +375,9 @@ int PDB_removeAt_(PDB *self, const char *k, int ksize)
 {
 	PDB_willWrite(self);
 
-	if(!tcbdbout(self->db, k, ksize))
+	if(!Store_remove(self->store, k, ksize))
 	{
-		PDB_fatalError_(self, "tcbdbout");
+		PDB_fatalError_(self, "remove");
 		return 0;
 	}
 
@@ -451,9 +403,9 @@ PNode *PDB_newNode(PDB *self)
 int PDB_sync(PDB *self)
 {
 	PDB_commit(self);
-	if(!tcbdbsync(self->db))
+	if(!Store_sync(self->store))
 	{
-		PDB_fatalError_(self, "tcbdbsync");
+		PDB_fatalError_(self, "sync");
 	}
 	
 	return 0;
@@ -524,7 +476,6 @@ long PDB_saveMarkedNodes(PDB *self)
 	
 	Log_Printf_("  PDB copying %i marked nodes to new db...\n", 
 		(int)CHash_count(self->markedPids));
-
 	
 	CHASH_FOREACH(self->markedPids, k, v, 
 		PNode_setPidLong_(inNode, (long)k);
@@ -540,10 +491,12 @@ long PDB_saveMarkedNodes(PDB *self)
 			PNode_next(inNode);
 		}
 		
-		
 		if(savedCount % 10000 == 0) 
 		{
 			Log_Printf_("    %i\n", (int)savedCount);
+			
+			// Free Datum pools periodically to avoid eating too much RAM
+			Pool_freeRefsThatHaveFreeFunc_(Pool_globalPool(), (PoolFreeFunc *)Datum_free);
 		}
 	);
 	
@@ -591,7 +544,7 @@ void PDB_markReachableNodes(PDB *self)
 
 long PDB_sizeInMB(PDB *self)
 {
-	return (long)(tcbdbfsiz(self->db)/(1024*1024));
+	return (long)(Store_size(self->store)/(1024*1024));
 }
 
 long PDB_collectGarbage(PDB *self)
@@ -643,13 +596,5 @@ void PDB_remove(PDB *self)
 {
 	PDB_close(self);
 	if(File_exists(self->dbFile)) File_remove(self->dbFile);
-}
-
-void PDB_warmup(PDB *self)
-{
-	// touch all the indexes to pull them into memory
-	BDBCUR *c = tcbdbcurnew(self->db);
-	tcbdbcurfirst(c);
-	while(tcbdbcurnext(c)) {}
 }
 
