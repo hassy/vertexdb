@@ -303,9 +303,6 @@ int VertexServer_api_write(VertexServer *self)
 	}
 	*/
 	
-<<<<<<< HEAD
-	if (PNode_moveToPathIfExists_(node, self->uriPath) != 0) 
-=======
 	/*
 	if(Datum_size(value) == 0)
 	{
@@ -315,7 +312,6 @@ int VertexServer_api_write(VertexServer *self)
 	*/
 
 	if (PNode_moveToPathIfExists_(node, HttpRequest_uriPath(self->httpRequest)) != 0) 
->>>>>>> upstream/master
 	{
 		VertexServer_setErrorCString_(self, "write path does not exist: ");
 		VertexServer_appendError_(self, HttpRequest_uriPath(self->httpRequest));
