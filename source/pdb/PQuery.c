@@ -132,7 +132,10 @@ int PQuery_setup(PQuery *self)
 	
 	if(!PQuery_cursorMatches(self))
 	{
-		PQuery_moveToNextMatch(self);
+		if(!PQuery_moveToNextMatch(self))
+		{
+			self->isDone = 1;
+		}
 	}
 	
 	self->selectCount = 1;
@@ -171,13 +174,13 @@ int PQuery_stepDirection(PQuery *self)
 
 void PQuery_step(PQuery *self)
 {
-	if(self->before && !Datum_isEmpty(self->before))
+	if(self->stepDirection == 1)
 	{
-		PNode_previous(self->node);
+		PNode_next(self->node);
 	}
 	else
 	{
-		PNode_next(self->node);
+		PNode_previous(self->node);
 	}
 }
 
@@ -202,9 +205,12 @@ int PQuery_isInRange(PQuery *self)
 	if(self->hasRange)
 	{
 		Datum *k = PNode_key(self->node);
+		
+		if (!k) return 0;
+		
 		int c = Datum_compare_(self->before, k);
 		
-		if (k && c < 0)
+		if (k && c <= 0)
 		{
 			return 0;
 		}
@@ -235,12 +241,11 @@ void PQuery_enumerate(PQuery *self)
 {
 	if (self->selectCount < self->selectCountMax)
 	{
-		
 		int found = PQuery_moveToNextMatch(self);
 		
 		if (found)
 		{
-				self->selectCount ++;	
+			self->selectCount ++;	
 		}
 		else
 		{

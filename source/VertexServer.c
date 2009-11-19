@@ -101,7 +101,6 @@ VertexServer *VertexServer_new(void)
 	CHash_setHash1Func_(self->ops, (CHashHashFunc *)Datum_hash1);
 	CHash_setHash2Func_(self->ops, (CHashHashFunc *)Datum_hash2);
 			
-	self->lastBackupTime = time(NULL);
 	return self;
 }
 
@@ -563,8 +562,6 @@ int VertexServer_backup(VertexServer *self)
 	Log_Printf__("backup %s and took %i seconds\n", 
 		result ? "failed" : "successful", (int)difftime(time(NULL), now));
 				
-	self->lastBackupTime = now;
-
 	return result;
 }
 
@@ -667,7 +664,9 @@ int VertexServer_api_view(VertexServer *self)
 {
 	Datum *before = HttpRequest_queryValue_(self->httpRequest, "before");
 	Datum *after = HttpRequest_queryValue_(self->httpRequest, "after");
+	Datum *mode = HttpRequest_queryValue_(self->httpRequest, "mode");
 	PNode *node = PDB_allocNode(self->pdb);
+	PNode *tmpNode = PDB_allocNode(self->pdb);
 	Datum *d = self->result;
 	int maxCount = 200;
 	
@@ -677,14 +676,17 @@ int VertexServer_api_view(VertexServer *self)
 		VertexServer_appendError_(self, HttpRequest_uriPath(self->httpRequest));
 		return -1;
 	}
-		Datum_appendCString_(d, "<html>");
+		Datum_appendCString_(d, "<!DOCTYPE html>\n");
+		Datum_appendCString_(d, "<html>\n");
+		Datum_appendCString_(d, "<head>\n");
 		Datum_appendCString_(d, "<title>");
 		Datum_append_(d, HttpRequest_uriPath(self->httpRequest));
-		Datum_appendCString_(d, "</title>");
+		Datum_appendCString_(d, "</title>\n");
+		Datum_appendCString_(d, "<meta charset=\"utf-8\">\n");
 		Datum_appendCString_(d, "<style>");
-		Datum_appendCString_(d, "body { font-family: sans; margin-top:2em; margin-left:2em; }");
-		Datum_appendCString_(d, ".path { font-size: 1em; font-weight: normal; font-family: sans; }");
-		Datum_appendCString_(d, ".note { color:#aaaaaa; font-size: 1em; font-weight: normal; font-family: sans;  }");
+		Datum_appendCString_(d, "body, td { font-family: Helvetica; font-size: 12px; margin-top:2em; margin-left:2em; }");
+		Datum_appendCString_(d, ".path { font-weight: normal; }");
+		Datum_appendCString_(d, ".note { color:#aaaaaa; }");
 		Datum_appendCString_(d, ".key { color:#000000;  }");
 		Datum_appendCString_(d, ".value { color:#888888; white-space:pre; }");
 		Datum_appendCString_(d, "a { color: #0000aa; text-decoration: none;  }");
@@ -746,10 +748,10 @@ int VertexServer_api_view(VertexServer *self)
 		
 		while ((k = PNode_key(node)) && count < maxCount)
 		{
-			Datum_appendCString_(d, "<tr>");
 			
 			if (Datum_beginsWithCString_(k , "_"))
 			{
+				Datum_appendCString_(d, "<tr>");
 				Datum_appendCString_(d, "<td align=right style=\"line-height:1.5em\">");
 				Datum_appendCString_(d, "<font class=key>");
 				Datum_append_(d, k);
@@ -763,30 +765,39 @@ int VertexServer_api_view(VertexServer *self)
 				Datum_appendCString_(d, "</span>");
 				Datum_appendCString_(d, "<br>\n");
 				Datum_appendCString_(d, "</td>");
+				Datum_appendCString_(d, "</tr>");
 			}
 			else
 			{
-				
-				Datum_appendCString_(d, "<td align=right>");
-				Datum_appendCString_(d, "<font class=key>");
-				Datum_append_(d, k);
-				Datum_appendCString_(d, "</font><br>\n");			
-				Datum_appendCString_(d, "</td>");
-				
-				Datum_appendCString_(d, "<td style=\"line-height:1.5em\">");
-				Datum_appendCString_(d, "&nbsp;&nbsp;<a href=");
-				if(Datum_size(HttpRequest_uriPath(self->httpRequest)) != 0) Datum_appendCString_(d, "/");
-				Datum_append_(d, HttpRequest_uriPath(self->httpRequest));
-				Datum_appendCString_(d, "/");
-				Datum_append_(d, k);
-				Datum_appendCString_(d, "> ↠ ");
-				Datum_appendLong_(d, PNode_nodeSizeAtCursor(node));
-				Datum_appendCString_(d, "</a> ");
-				Datum_appendCString_(d, "<font class=value>");
-				Datum_appendCString_(d, "</td>");
+				if(Datum_equalsCString_(mode, "table"))
+				{
+					PNode_setPid_(tmpNode, PNode_value(node));
+					PNode_asHtmlRow(tmpNode, d);
+				}
+				else 
+				{
+					Datum_appendCString_(d, "<tr>");
+					Datum_appendCString_(d, "<td align=right>");
+					Datum_appendCString_(d, "<font class=key>");
+					Datum_append_(d, k);
+					Datum_appendCString_(d, "</font><br>\n");
+					Datum_appendCString_(d, "</td>");
+					
+					Datum_appendCString_(d, "<td style=\"line-height:1.5em\">");
+					Datum_appendCString_(d, "&nbsp;&nbsp;<a href=");
+					if(Datum_size(HttpRequest_uriPath(self->httpRequest)) != 0) Datum_appendCString_(d, "/");
+					Datum_append_(d, HttpRequest_uriPath(self->httpRequest));
+					Datum_appendCString_(d, "/");
+					Datum_append_(d, k);
+					Datum_appendCString_(d, "> ↠ ");
+					Datum_appendLong_(d, PNode_nodeSizeAtCursor(node));
+					Datum_appendCString_(d, "</a> ");
+					Datum_appendCString_(d, "<font class=value>");
+					Datum_appendCString_(d, "</td>");
+					Datum_appendCString_(d, "</tr>");
+				}
 			}
 			
-			Datum_appendCString_(d, "</tr>");
 			PNode_next(node);
 			count ++;
 		}
@@ -804,8 +815,9 @@ int VertexServer_api_view(VertexServer *self)
 	}
 	
 	Datum_appendCString_(d, "</body>\n");
+	Datum_appendCString_(d, "</html>\n");
 
-	HttpResponse_setContentType_(self->httpResponse, "text/html;charset=utf-8");
+	HttpResponse_setContentType_(self->httpResponse, "text/html; charset=utf-8");
 	return 0;
 }
 
@@ -984,7 +996,7 @@ void VertexServer_registerSignals(VertexServer *self)
 
 void VertexServer_setLogPath_(VertexServer *self, const char *path)
 {
-	self->logPath = path;
+	Log_setPath_(path);
 }
 
 void VertexServer_setPidPath_(VertexServer *self, const char *path)
@@ -1045,25 +1057,7 @@ void VertexServer_removePidFile(VertexServer *self)
 
 int VertexServer_openLog(VertexServer *self)
 {
-	Log_init();
-
-	if (self->logPath)
-	{
-		Log_setPath_(self->logPath);
-		
-		if (Log_open())
-		{
-			Log_Printf_("Unable to open log file for writing: %s\n", self->logPath);
-			exit(-1);
-		}
-		
-		Log_Printf_("Logging to %s\n", self->logPath);
-	}
-	else
-	{
-		Log_Printf("Logging to stderr\n");
-	}
-	
+	Log_open();
 	return 0;
 }
 
